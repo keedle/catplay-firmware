@@ -27,7 +27,8 @@ concurrency:
 jobs:
   preflight:
     if: github.repository == 'keedle/catplay-firmware'
-    runs-on: ubuntu-24.04
+    # Ubuntu 24.04's hosted AppArmor policy blocks BitBake user namespaces.
+    runs-on: ubuntu-22.04
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 165 || 35 }}
     env:
       CATPLAY_PROBE_SOURCE_REV: 886bb2ad9b930c14e9a31e54c3671033e7934001
@@ -52,6 +53,8 @@ jobs:
             iproute2 libacl1 locales python3 python3-git python3-jinja2 \
             python3-pexpect python3-subunit socat texinfo unzip wget xz-utils zstd
           sudo locale-gen en_US.UTF-8
+      - name: Check BitBake user namespace support
+        run: unshare -Ur true
       - name: Inspect resources, parse metadata and generate probe dependency graph
         env:
           LANG: en_US.UTF-8
