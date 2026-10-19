@@ -15,21 +15,23 @@ on:
       - .github/workflows/airplay-probe-preflight.yml
       - scripts/airplay-probe-preflight.sh
       - scripts/airplay-probe-build.sh
+      - scripts/airplay-probe-sstate-cache.py
       - meta-catplay/recipes-apps/catplay-airplay-probe.bb
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: airplay-probe-${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 'build' || 'preflight' }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   preflight:
     if: github.repository == 'keedle/catplay-firmware'
     # Ubuntu 24.04's hosted AppArmor policy blocks BitBake user namespaces.
     runs-on: ubuntu-22.04
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 165 || 35 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 330 || 35 }}
     env:
       CATPLAY_PROBE_SOURCE_REV: 886bb2ad9b930c14e9a31e54c3671033e7934001
     steps:
@@ -60,6 +62,22 @@ jobs:
           LANG: en_US.UTF-8
           LC_ALL: en_US.UTF-8
         run: firmware/scripts/airplay-probe-preflight.sh catplay
+      - name: Identify the compatible sstate cache generation
+        id: sstate_keys
+        if: github.event_name == 'workflow_dispatch' && inputs.build_probe
+        run: python3 firmware/scripts/airplay-probe-sstate-cache.py keys firmware
+      - name: Restore a compatible bounded sstate generation
+        id: sstate_restore
+        if: github.event_name == 'workflow_dispatch' && inputs.build_probe
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: firmware/build/airplay-probe-preflight/sstate-cache-input
+          key: ${{ steps.sstate_keys.outputs.generation }}
+          restore-keys: ${{ steps.sstate_keys.outputs.prefix }}
+      - name: Validate and import completed sstate objects
+        if: github.event_name == 'workflow_dispatch' && inputs.build_probe && steps.sstate_restore.outcome == 'success'
+        run: python3 firmware/scripts/airplay-probe-sstate-cache.py restore firmware
       - name: Prepare disk space on the disposable hosted runner
         if: github.event_name == 'workflow_dispatch' && inputs.build_probe
         timeout-minutes: 10
@@ -84,6 +102,46 @@ jobs:
       - name: Compile the MIPS diagnostic probe and collect binary evidence
         if: github.event_name == 'workflow_dispatch' && inputs.build_probe
         run: firmware/scripts/airplay-probe-build.sh
+      - name: Confirm the BitBake server stopped before cache snapshot
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.build_probe && steps.sstate_keys.outcome == 'success'
+        timeout-minutes: 2
+        run: |
+          firmware_root="$GITHUB_WORKSPACE/firmware"
+          build_dir="$firmware_root/build/airplay-probe-preflight/yocto"
+          artifact_dir="$firmware_root/build/airplay-probe-preflight/probe-artifacts"
+          export LANG=en_US.UTF-8
+          export LC_ALL=en_US.UTF-8
+          set +u
+          source "$firmware_root/openembedded-core/oe-init-build-env" "$build_dir" "$firmware_root/bitbake"
+          set -u
+          mkdir -p "$artifact_dir"
+          if timeout --signal=TERM --kill-after=5s 30s bitbake --kill-server \
+              > "$artifact_dir/server-stop.log" 2>&1; then
+            printf 'stop_status=0\n' > "$artifact_dir/bitbake-server-stop.txt"
+          else
+            printf 'stop_status=1\n' > "$artifact_dir/bitbake-server-stop.txt"
+          fi
+      - name: Stage completed sstate objects after the build stops
+        id: sstate_stage
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.build_probe && steps.sstate_keys.outcome == 'success'
+        timeout-minutes: 10
+        run: python3 firmware/scripts/airplay-probe-sstate-cache.py stage firmware
+      - name: Save this bounded sstate generation
+        id: sstate_save
+        if: always() && steps.sstate_stage.outputs.save == 'true'
+        timeout-minutes: 45
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: firmware/build/airplay-probe-preflight/sstate-cache-input
+          key: ${{ steps.sstate_keys.outputs.generation }}
+      - name: Rotate old generations for this sstate prefix
+        if: always() && steps.sstate_save.outcome == 'success'
+        timeout-minutes: 3
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 firmware/scripts/airplay-probe-sstate-cache.py rotate firmware
       - name: Upload target build output and diagnostics
         if: always() && github.event_name == 'workflow_dispatch' && inputs.build_probe
         uses: actions/upload-artifact@v4

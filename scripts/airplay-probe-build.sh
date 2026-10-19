@@ -155,7 +155,7 @@ cd "$build_dir"
 timeout --signal=TERM --kill-after=30s 3m bitbake -R "$resource_conf" -e catplay-airplay-probe | \
     python3 -c '
 import json, re, sys
-allowed = set("MACHINE DISTRO DEFAULTTUNE TARGET_ARCH TCLIBC RUST_HOST_SYS RUST_TARGET_SYS RUST_VERSION RUST_PANIC_STRATEGY TMPDIR DEPLOY_DIR_IMAGE RUSTFLAGS LDFLAGS RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS BB_NUMBER_THREADS PARALLEL_MAKE CARGO_BUILD_JOBS".split())
+allowed = set("MACHINE DISTRO DEFAULTTUNE TARGET_ARCH TCLIBC RUST_HOST_SYS RUST_TARGET_SYS RUST_BUILD_SYS STAGING_BINDIR_NATIVE CATPLAY_PROBE_RUSTC CATPLAY_PROBE_EXPECTED_RUST_RELEASE RUST_PANIC_STRATEGY TMPDIR DEPLOY_DIR_IMAGE RUSTFLAGS LDFLAGS RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS BB_NUMBER_THREADS PARALLEL_MAKE CARGO_BUILD_JOBS".split())
 values = {}
 for line in sys.stdin:
     match = re.fullmatch(r"(?:export )?([A-Z_0-9]+)=\"(.*)\"\n?", line)
@@ -169,32 +169,38 @@ import json
 from pathlib import Path
 import sys
 values = json.loads(Path(sys.argv[1]).read_text())
-for key, wanted in {'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64', 'BB_NUMBER_THREADS': '2', 'PARALLEL_MAKE': '-j 2', 'CARGO_BUILD_JOBS': '2'}.items():
+import re
+for key, wanted in {'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64', 'BB_NUMBER_THREADS': '2', 'PARALLEL_MAKE': '-j 2', 'CARGO_BUILD_JOBS': '2', 'CATPLAY_PROBE_EXPECTED_RUST_RELEASE': '1.94.1'}.items():
     if values.get(key) != wanted:
         raise SystemExit(f'Build configuration mismatch: {key}')
 if '-fuse-ld=bfd' not in values.get('LDFLAGS', '') or '-Bstatic,-latomic,-Bdynamic' not in values.get('RUSTFLAGS', ''):
     raise SystemExit('Expected MIPS BFD/static atomic settings are missing')
 root = Path(sys.argv[2]).resolve()
-for key in ['TMPDIR', 'DEPLOY_DIR_IMAGE']:
+if not re.fullmatch(r'[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+', values.get('RUST_BUILD_SYS', '')):
+    raise SystemExit('Missing concrete native Rust build triple')
+if values.get('CATPLAY_PROBE_RUSTC') != str(Path(values.get('STAGING_BINDIR_NATIVE', '')) / 'rustc'):
+    raise SystemExit('Unexpected exported native Rust compiler path')
+for key in ['TMPDIR', 'DEPLOY_DIR_IMAGE', 'STAGING_BINDIR_NATIVE']:
     path = Path(values[key]).resolve()
     if not path.is_relative_to(root):
         raise SystemExit(f'Unexpected path outside this preflight build: {key}')
 PY_TARGET
 
 build_started=1
-timeout --signal=TERM --kill-after=30s 120m \
+timeout --signal=TERM --kill-after=30s 270m \
     bitbake -R "$resource_conf" -c deploy catplay-airplay-probe
 python3 - "$metadata_file" "$artifact_dir" "$report_dir" <<'PY_ARTIFACTS'
 import hashlib
 import json
 from pathlib import Path
 import shutil
+import re
 import sys
 metadata, destination, reports = map(Path, sys.argv[1:])
 values = json.loads(metadata.read_text())
 deployed = Path(values['DEPLOY_DIR_IMAGE'])
 base = 'airplay-mirror-probe-clk-mini-ultra-nor'
-required = [base, base + '.sha256', base + '.elf-header.txt', base + '.dynamic.txt', base + '.abi-attributes.txt', base + '.program-headers.txt', base + '.build-manifest.txt']
+required = [base, base + '.sha256', base + '.elf-header.txt', base + '.dynamic.txt', base + '.abi-attributes.txt', base + '.program-headers.txt', base + '.build-manifest.txt', base + '.rustc-version.txt']
 for name in required:
     path = deployed / name
     if not path.is_file():
@@ -206,9 +212,36 @@ if manifest.get('source_bundle_sha256') != (reports / 'source-bundle.sha256').re
 for key, wanted in {'machine': 'clk-mini-ultra-nor', 'distro': 'c2a-musl', 'default_tune': 'mips32r2el', 'tclibc': 'musl', 'expected_catplay_git_revision': '886bb2ad9b930c14e9a31e54c3671033e7934001', 'rust_libc_unstable_musl_v1_2_3': '1', 'rust_libc_unstable_gnu_time_bits': '64'}.items():
     if manifest.get(key) != wanted:
         raise SystemExit(f'Deployed probe manifest mismatch: {key}')
-for key, variable in {'target_arch': 'TARGET_ARCH', 'rust_host_sys': 'RUST_HOST_SYS', 'rust_target_sys': 'RUST_TARGET_SYS', 'rust_version': 'RUST_VERSION', 'rust_panic_strategy': 'RUST_PANIC_STRATEGY'}.items():
+for key, variable in {'target_arch': 'TARGET_ARCH', 'rust_host_sys': 'RUST_HOST_SYS', 'rust_target_sys': 'RUST_TARGET_SYS', 'rust_panic_strategy': 'RUST_PANIC_STRATEGY'}.items():
     if not values.get(variable) or manifest.get(key) != values[variable]:
         raise SystemExit(f'Deployed probe toolchain differs from build metadata: {key}')
+# The compiler host is native; OE's RUST_HOST_SYS/RUST_TARGET_SYS above are
+# the MIPS target for this recipe and must not be used as the compiler host.
+lines = (destination / (base + '.rustc-version.txt')).read_text(encoding='utf-8').splitlines()
+fields = {}
+for line in lines[1:]:
+    if ': ' in line:
+        key, value = line.split(': ', 1)
+        if key in fields:
+            raise SystemExit('Duplicate rustc version field')
+        fields[key] = value
+release = fields.get('release', '')
+if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', release) or not lines or lines[0].split()[:2] != ['rustc', release]:
+    raise SystemExit('Malformed rustc release report')
+if release != values.get('CATPLAY_PROBE_EXPECTED_RUST_RELEASE') or manifest.get('expected_rustc_release') != release:
+    raise SystemExit('Native rustc release differs from pinned compiler recipe')
+for key, pattern in [('commit-hash', r'(?:[0-9a-f]{40}|unknown)'), ('commit-date', r'(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|unknown)')]:
+    if not re.fullmatch(pattern, fields.get(key, '')):
+        raise SystemExit('Invalid native rustc commit evidence')
+compiler_host = fields.get('host', '')
+if not re.fullmatch(r'[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+', compiler_host) or compiler_host != values.get('RUST_BUILD_SYS') or manifest.get('rust_build_sys') != compiler_host:
+    raise SystemExit('Native rustc host differs from build metadata')
+compiler_path = str(Path(values['STAGING_BINDIR_NATIVE']) / 'rustc')
+if values.get('CATPLAY_PROBE_RUSTC') != compiler_path or manifest.get('rustc_path') != compiler_path:
+    raise SystemExit('Native rustc executable differs from exported compiler path')
+for key, observed in {'rustc_release': release, 'rustc_commit_hash': fields['commit-hash'], 'rustc_commit_date': fields['commit-date'], 'rustc_host': compiler_host}.items():
+    if manifest.get(key) != observed:
+        raise SystemExit(f'Native rustc report differs from manifest: {key}')
 with (destination / base).open('rb') as executable:
     header = executable.read(20)
 if len(header) < 20 or header[:6] != b'\x7fELF\x01\x01' or int.from_bytes(header[18:20], 'little') != 8:
