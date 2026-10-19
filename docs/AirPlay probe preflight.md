@@ -1,0 +1,13 @@
+# AirPlay probe target preflight
+
+The `AirPlay probe target preflight` workflow checks the hosted build configuration for the Mini Ultra1 `clk-mini-ultra-nor`. Its manual trigger and narrowly scoped development-branch push trigger run only in `keedle/catplay-firmware`, on a standard Ubuntu runner with a 35-minute limit. They do not compile an image, SDK or target executable and do not contact a device.
+
+The application source is pinned to `keedle/catplay` revision `886bb2ad9b930c14e9a31e54c3671033e7934001`. The firmware checkout supplies exact BitBake, OE-Core, Clang, OpenEmbedded and Freescale gitlinks. The stale Scarthgap README is not the version selector. The separate `meta-rust` and Scarthgap Rust mixin are intentionally excluded; the pinned OE-Core Cargo/Rust classes and the firmware's `c2a-rust-app` class provide the toolchain.
+
+The script requires a clean application checkout, verifies the pin, creates the existing normalized source bundle twice and checks byte-for-byte determinism. It generates a separate build configuration for `c2a-musl` and `mips32r2el`, checks host resources, parses the metadata and saves the probe's dependency graph. The resource threshold is for parsing only. A successful parse does not establish that a standard runner can compile the Rust/LLVM target toolchain.
+
+Reports contain source pins, bundle hashes and member names, layer selection, generated configuration, resource measurements, graph files and an allowlist of target/toolchain values. The full BitBake environment is never archived. Failure reports are uploaded too. Actual hosted parsing and target compilation remain pending until their runs succeed.
+
+`meta-catplay/recipes-apps/catplay-airplay-probe.bb` is a separate, machine-scoped recipe for the existing gated `airplay_mirror_probe` example. It preserves the application's default dependency features, uses OpenSSL slim, Opus and the GNU runtime for static atomic helpers, and copies the shipping app's MIPS non-PIE/BFD/static-atomic settings. The shared class and distro supply the time64 settings for libc and Rust's standard library. No generic downloaded musl binary or SDK is substituted.
+
+The recipe installs no target files, startup service or image package inclusion. A later deliberate recipe build would deploy only the compiler-reported example executable, its hash, ELF header, ABI attributes, program headers, dynamic dependencies and a build manifest. These reports must be checked against the target before any separately authorized bench use. `LICENSE = "CLOSED"` marks this experiment's build metadata; it does not assign a license or grant distribution rights to upstream code.
