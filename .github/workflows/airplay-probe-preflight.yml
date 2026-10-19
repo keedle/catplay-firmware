@@ -1,26 +1,34 @@
-name: AirPlay probe target preflight
+name: AirPlay probe target build
+run-name: ${{ inputs.build_probe && 'Compile MIPS receiver probe' || 'Check MIPS build configuration' }}
 
 on:
   workflow_dispatch:
+    inputs:
+      build_probe:
+        description: Compile the diagnostic probe after configuration and resource checks
+        type: boolean
+        default: false
+        required: true
   push:
     branches: [feature/airplay-mirroring-poc]
     paths:
       - .github/workflows/airplay-probe-preflight.yml
       - scripts/airplay-probe-preflight.sh
+      - scripts/airplay-probe-build.sh
       - meta-catplay/recipes-apps/catplay-airplay-probe.bb
 
 permissions:
   contents: read
 
 concurrency:
-  group: airplay-probe-preflight-${{ github.ref }}
+  group: airplay-probe-${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 'build' || 'preflight' }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   preflight:
     if: github.repository == 'keedle/catplay-firmware'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 165 || 35 }}
     env:
       CATPLAY_PROBE_SOURCE_REV: 886bb2ad9b930c14e9a31e54c3671033e7934001
     steps:
@@ -49,6 +57,38 @@ jobs:
           LANG: en_US.UTF-8
           LC_ALL: en_US.UTF-8
         run: firmware/scripts/airplay-probe-preflight.sh catplay
+      - name: Prepare disk space on the disposable hosted runner
+        if: github.event_name == 'workflow_dispatch' && inputs.build_probe
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_REPOSITORY:-}" == keedle/catplay-firmware && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]
+          mkdir -p firmware/build/airplay-probe-preflight/probe-artifacts
+          report=firmware/build/airplay-probe-preflight/probe-artifacts/runner-disk-preparation.txt
+          df -Pk . > "$report"
+          available_kib="$(df -Pk . | awk 'NR == 2 {print $4}')"
+          if (( available_kib < 52428800 )); then
+            # These stock image tools are unused by the Linux/MIPS build.
+            # Keep the workspace, native compilers, Python and Rust toolchains.
+            for unused in /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL; do
+              if [[ -d "$unused" ]]; then
+                du -sk "$unused" >> "$report"
+              fi
+            done
+            sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          fi
+          df -Pk . >> "$report"
+      - name: Compile the MIPS diagnostic probe and collect binary evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.build_probe
+        run: firmware/scripts/airplay-probe-build.sh
+      - name: Upload target build output and diagnostics
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.build_probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: airplay-mips-probe-${{ github.run_id }}
+          path: firmware/build/airplay-probe-preflight/probe-artifacts
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload preflight evidence, including failures
         if: always()
         uses: actions/upload-artifact@v4
