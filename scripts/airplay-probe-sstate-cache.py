@@ -50,7 +50,7 @@ def cache_keys(firmware):
     target_files.extend(p for p in (firmware / "meta-catplay/conf").rglob("*.conf") if p.is_file() and not p.is_symlink())
     target = hash_files(target_files, firmware)
     scope = hashlib.sha256(("\n".join([f"schema={SCHEMA}", "os=ubuntu-22.04", "arch=x86_64", *pins, "target=" + target])).encode()).hexdigest()[:24]
-    files = [firmware / "meta-catplay/recipes-apps/catplay-airplay-probe.bb"]
+    files = [firmware / "meta-catplay/recipes-apps" / name for name in ("catplay-airplay-probe.bb", "catplay-airplay-app.bb")]
     files.extend(p for p in (firmware / "meta-catplay").rglob("*.bbclass") if p.is_file() and not p.is_symlink())
     for layer in LAYERS:
         files.extend(p for p in (firmware / layer).rglob("*.bbclass") if p.is_file() and not p.is_symlink())

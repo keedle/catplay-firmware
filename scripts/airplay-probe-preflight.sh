@@ -12,7 +12,7 @@ source_root="$(cd "$1" && pwd)"
 preflight_root="${firmware_root}/build/airplay-probe-preflight"
 report_dir="${preflight_root}/reports"
 build_dir="${preflight_root}/yocto"
-source_rev="886bb2ad9b930c14e9a31e54c3671033e7934001"
+source "${firmware_root}/scripts/airplay-build-selection.sh"
 required_pins=(bitbake openembedded-core meta-clang meta-openembedded meta-freescale)
 mkdir -p "$report_dir" "$build_dir/conf"
 exec > >(tee "${report_dir}/preflight.log") 2>&1
@@ -47,6 +47,7 @@ PY
 {
     printf 'firmware_revision=%s\n' "$(git -C "$firmware_root" rev-parse HEAD)"
     printf 'catplay_revision=%s\n' "$source_rev"
+    printf 'airplay_recipe=%s\n' "$airplay_recipe"
     git -C "$firmware_root" ls-tree HEAD | awk '$1 == "160000" { print }'
 } > "${report_dir}/source-pins.txt"
 
@@ -111,38 +112,40 @@ set -u
 cd "$build_dir"
 timeout --signal=TERM --kill-after=30s 3m bitbake-layers show-layers > "${report_dir}/layers.txt"
 timeout --signal=TERM --kill-after=30s 8m bitbake -p
-timeout --signal=TERM --kill-after=30s 5m bitbake -g catplay-airplay-probe
+timeout --signal=TERM --kill-after=30s 5m bitbake -g "$airplay_recipe"
 for graph in pn-buildlist recipe-depends.dot task-depends.dot; do
     [[ ! -f "$graph" ]] || cp "$graph" "$report_dir/"
 done
-python3 - "${report_dir}/pn-buildlist" <<'PY_GRAPH'
+python3 - "${report_dir}/pn-buildlist" "$airplay_recipe" <<'PY_GRAPH'
 import sys
 with open(sys.argv[1], encoding='utf-8') as stream:
     recipes = {line.strip() for line in stream}
-required = {'catplay-airplay-probe', 'openssl-slim', 'libopus', 'gcc-runtime'}
+required = {sys.argv[2], 'openssl-slim', 'libopus', 'gcc-runtime'}
+if sys.argv[2] == 'catplay-airplay-app':
+    required.update({'libusb1', 'x264', 'pixman', 'libyuv', 'dbus', 'libjpeg-turbo'})
 if not required.issubset(recipes):
     raise SystemExit('Missing required probe/runtime graph entries: ' + ', '.join(sorted(required - recipes)))
 if recipes.intersection({'c2a-system-image', 'c2a-system-bundle'}):
     raise SystemExit('Unexpected full image/bundle in probe dependency graph')
 PY_GRAPH
 # Do not archive bitbake -e output: it can contain host credentials/environment.
-timeout --signal=TERM --kill-after=30s 3m bitbake -e catplay-airplay-probe | \
+timeout --signal=TERM --kill-after=30s 3m bitbake -e "$airplay_recipe" | \
     python3 -c '
 import re, sys
-allowed = set("MACHINE DISTRO DEFAULTTUNE TUNE_FEATURES TARGET_ARCH TARGET_SYS TARGET_OS TCLIBC TOOLCHAIN RUST_HOST_SYS RUST_TARGET_SYS RUST_VERSION RUST_PANIC_STRATEGY RUSTFLAGS LDFLAGS DEPENDS CARGO_BUILD_FLAGS CARGO_SRC_DIR RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS CARGO_CFG_LIBC_UNSTABLE_MUSL_V1_2_3 CARGO_CFG_LIBC_UNSTABLE_GNU_TIME_BITS".split())
+allowed = set("MACHINE DISTRO DEFAULTTUNE TUNE_FEATURES TARGET_ARCH TARGET_SYS TARGET_OS TCLIBC TOOLCHAIN RUST_HOST_SYS RUST_TARGET_SYS RUST_VERSION RUST_PANIC_STRATEGY RUSTFLAGS LDFLAGS DEPENDS CARGO_BUILD_FLAGS CARGO_SRC_DIR CATPLAY_AIRPLAY_SOURCE_REV CATPLAY_AIRPLAY_ARTIFACT RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS CARGO_CFG_LIBC_UNSTABLE_MUSL_V1_2_3 CARGO_CFG_LIBC_UNSTABLE_GNU_TIME_BITS".split())
 for line in sys.stdin:
     match = re.match(r"(?:export )?([A-Z_0-9]+)=", line)
     if match and match[1] in allowed:
         print(line, end="")
 ' > "${report_dir}/target-toolchain.txt"
-python3 - "${report_dir}/target-toolchain.txt" <<'PY'
+python3 - "${report_dir}/target-toolchain.txt" "$source_rev" "$artifact_base" <<'PY'
 import re, sys
 values = {}
 for line in open(sys.argv[1], encoding='utf-8'):
     match = re.match(r'(?:export )?([A-Z_0-9]+)="(.*)"$', line.rstrip())
     if match:
         values[match[1]] = match[2]
-for key, wanted in {'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64'}.items():
+for key, wanted in {'CATPLAY_AIRPLAY_SOURCE_REV': sys.argv[2], 'CATPLAY_AIRPLAY_ARTIFACT': sys.argv[3], 'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64'}.items():
     if values.get(key) != wanted:
         raise SystemExit(f'Target metadata mismatch: {key}')
 if '-fuse-ld=bfd' not in values.get('LDFLAGS', '') or '-Bstatic,-latomic,-Bdynamic' not in values.get('RUSTFLAGS', ''):

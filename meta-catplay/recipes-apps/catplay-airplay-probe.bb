@@ -6,6 +6,11 @@ inherit catplay-src-bundle-local
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 S = "${UNPACKDIR}"
 CARGO_SRC_DIR = "carplay/catplay_carplay"
+CATPLAY_AIRPLAY_CARGO_NAME = "airplay_mirror_probe"
+CATPLAY_AIRPLAY_CARGO_KIND = "example"
+CATPLAY_AIRPLAY_CARGO_SELECT = "--example airplay_mirror_probe"
+CATPLAY_AIRPLAY_ARTIFACT = "airplay-mirror-probe-${MACHINE}"
+CATPLAY_AIRPLAY_SOURCE_REV = "886bb2ad9b930c14e9a31e54c3671033e7934001"
 DEPENDS += "openssl-slim libopus gcc-runtime"
 COMPATIBLE_MACHINE = "^clk-mini-ultra-nor$"
 PACKAGE_ARCH:ingenic-x1600 = "ingenic-x1600"
@@ -65,7 +70,7 @@ for key, pattern in [('commit-hash', r'(?:[0-9a-f]{40}|unknown)'), ('commit-date
 evidence = {'rustc_path': sys.argv[3], 'rustc_release': release, 'rustc_commit_hash': fields['commit-hash'], 'rustc_commit_date': fields['commit-date'], 'rustc_host': fields['host']}
 output.write_text(json.dumps(evidence, sort_keys=True, indent=2) + '\n')
 PY_RUSTC
-    oe_cargo_build --locked --example airplay_mirror_probe \
+    oe_cargo_build --locked ${CATPLAY_AIRPLAY_CARGO_SELECT} \
         --features experimental_airplay_mirroring \
         --message-format=json-render-diagnostics > "${B}/cargo-probe.jsonl"
     python3 - "${B}/cargo-probe.jsonl" "${B}/probe-executable.txt" <<'PY'
@@ -80,7 +85,7 @@ for line in open(sys.argv[1], encoding='utf-8'):
         continue
     target = event.get('target', {})
     path = event.get('executable')
-    if event.get('reason') == 'compiler-artifact' and target.get('name') == 'airplay_mirror_probe' and 'example' in target.get('kind', []) and path:
+    if event.get('reason') == 'compiler-artifact' and target.get('name') == '${CATPLAY_AIRPLAY_CARGO_NAME}' and '${CATPLAY_AIRPLAY_CARGO_KIND}' in target.get('kind', []) and path:
         executables.add(path)
 if len(executables) != 1:
     raise SystemExit('Expected exactly one compiler-reported probe executable')
@@ -101,14 +106,16 @@ ALLOW_EMPTY:${PN} = "1"
 do_deploy() {
     probe_path="$(cat "${B}/probe-executable.txt")"
     install -d "${DEPLOYDIR}"
-    install -m 0755 "$probe_path" "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}"
-    ${READELF} -h "$probe_path" > "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.elf-header.txt"
-    ${READELF} -d "$probe_path" > "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.dynamic.txt"
-    ${READELF} -A "$probe_path" > "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.abi-attributes.txt"
-    ${READELF} -l "$probe_path" > "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.program-headers.txt"
-    cat > "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.build-manifest.txt" <<'MANIFEST'
+    install -m 0755 "$probe_path" "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}"
+    ${READELF} -h "$probe_path" > "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.elf-header.txt"
+    ${READELF} -d "$probe_path" > "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.dynamic.txt"
+    ${READELF} -A "$probe_path" > "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.abi-attributes.txt"
+    ${READELF} -l "$probe_path" > "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.program-headers.txt"
+    cat > "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.build-manifest.txt" <<'MANIFEST'
 recipe=${PN}-${PV}-${PR}
-expected_catplay_git_revision=886bb2ad9b930c14e9a31e54c3671033e7934001
+expected_catplay_git_revision=${CATPLAY_AIRPLAY_SOURCE_REV}
+cargo_target=${CATPLAY_AIRPLAY_CARGO_NAME}
+cargo_kind=${CATPLAY_AIRPLAY_CARGO_KIND}
 source_bundle_sha256=${CATPLAY_SRC_BUNDLE_SHA256}
 machine=${MACHINE}
 distro=${DISTRO}
@@ -130,8 +137,8 @@ rust_libc_unstable_gnu_time_bits=${RUST_LIBC_UNSTABLE_GNU_TIME_BITS}
 cargo_cfg_libc_unstable_musl_v1_2_3=${CARGO_CFG_LIBC_UNSTABLE_MUSL_V1_2_3}
 cargo_cfg_libc_unstable_gnu_time_bits=${CARGO_CFG_LIBC_UNSTABLE_GNU_TIME_BITS}
 MANIFEST
-    install -m 0644 "${B}/probe-rustc-version.txt" "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.rustc-version.txt"
-    python3 - "${B}/probe-rustc-evidence.json" "${DEPLOYDIR}/airplay-mirror-probe-${MACHINE}.build-manifest.txt" <<'PY_MANIFEST'
+    install -m 0644 "${B}/probe-rustc-version.txt" "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.rustc-version.txt"
+    python3 - "${B}/probe-rustc-evidence.json" "${DEPLOYDIR}/${CATPLAY_AIRPLAY_ARTIFACT}.build-manifest.txt" <<'PY_MANIFEST'
 import json
 from pathlib import Path
 import sys
@@ -140,6 +147,6 @@ with Path(sys.argv[2]).open('a', encoding='utf-8') as manifest:
         manifest.write(f'{key}={value}\n')
 PY_MANIFEST
     cd "${DEPLOYDIR}"
-    sha256sum "airplay-mirror-probe-${MACHINE}" > "airplay-mirror-probe-${MACHINE}.sha256"
+    sha256sum "${CATPLAY_AIRPLAY_ARTIFACT}" > "${CATPLAY_AIRPLAY_ARTIFACT}.sha256"
 }
 addtask deploy after do_compile before do_build

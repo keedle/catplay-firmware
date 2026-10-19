@@ -1,11 +1,17 @@
-name: AirPlay probe target build
-run-name: ${{ inputs.build_probe && 'Compile MIPS receiver probe' || 'Check MIPS build configuration' }}
+name: AirPlay target build
+run-name: ${{ inputs.build_probe && format('Compile MIPS AirPlay {0}', inputs.target) || 'Check MIPS application build configuration' }}
 
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Integrated application or separate diagnostic probe
+        type: choice
+        options: [application, probe]
+        default: application
+        required: true
       build_probe:
-        description: Compile the diagnostic probe after configuration and resource checks
+        description: Compile the selected artifact after configuration and resource checks
         type: boolean
         default: false
         required: true
@@ -13,10 +19,12 @@ on:
     branches: [feature/airplay-mirroring-poc]
     paths:
       - .github/workflows/airplay-probe-preflight.yml
+      - scripts/airplay-build-selection.sh
       - scripts/airplay-probe-preflight.sh
       - scripts/airplay-probe-build.sh
       - scripts/airplay-probe-sstate-cache.py
       - meta-catplay/recipes-apps/catplay-airplay-probe.bb
+      - meta-catplay/recipes-apps/catplay-airplay-app.bb
 
 permissions:
   contents: read
@@ -33,18 +41,24 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.build_probe && 330 || 35 }}
     env:
-      CATPLAY_PROBE_SOURCE_REV: 886bb2ad9b930c14e9a31e54c3671033e7934001
+      CATPLAY_AIRPLAY_TARGET: ${{ inputs.target || 'application' }}
     steps:
       - name: Check out development firmware metadata
         uses: actions/checkout@v4
         with:
           path: firmware
           persist-credentials: false
-      - name: Check out the reviewed probe source
+      - name: Select the reviewed application source
+        id: selected
+        run: |
+          source firmware/scripts/airplay-build-selection.sh
+          echo "source_rev=$source_rev" >> "$GITHUB_OUTPUT"
+          echo "recipe=$airplay_recipe" >> "$GITHUB_OUTPUT"
+      - name: Check out the reviewed source
         uses: actions/checkout@v4
         with:
           repository: keedle/catplay
-          ref: 886bb2ad9b930c14e9a31e54c3671033e7934001
+          ref: ${{ steps.selected.outputs.source_rev }}
           path: catplay
           persist-credentials: false
       - name: Install parse host prerequisites
@@ -57,7 +71,7 @@ jobs:
           sudo locale-gen en_US.UTF-8
       - name: Check BitBake user namespace support
         run: unshare -Ur true
-      - name: Inspect resources, parse metadata and generate probe dependency graph
+      - name: Inspect resources, parse metadata and generate target dependency graph
         env:
           LANG: en_US.UTF-8
           LC_ALL: en_US.UTF-8
@@ -99,7 +113,7 @@ jobs:
             sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
           fi
           df -Pk . >> "$report"
-      - name: Compile the MIPS diagnostic probe and collect binary evidence
+      - name: Compile the selected MIPS artifact and collect binary evidence
         if: github.event_name == 'workflow_dispatch' && inputs.build_probe
         run: firmware/scripts/airplay-probe-build.sh
       - name: Confirm the BitBake server stopped before cache snapshot
@@ -146,7 +160,7 @@ jobs:
         if: always() && github.event_name == 'workflow_dispatch' && inputs.build_probe
         uses: actions/upload-artifact@v4
         with:
-          name: airplay-mips-probe-${{ github.run_id }}
+          name: airplay-mips-${{ inputs.target || 'application' }}-${{ github.run_id }}
           path: firmware/build/airplay-probe-preflight/probe-artifacts
           if-no-files-found: warn
           retention-days: 7
@@ -154,7 +168,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: airplay-probe-preflight-${{ github.run_id }}
+          name: airplay-target-preflight-${{ github.run_id }}
           path: firmware/build/airplay-probe-preflight/reports
           if-no-files-found: warn
           retention-days: 7

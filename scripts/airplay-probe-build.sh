@@ -13,7 +13,7 @@ preflight_root="${firmware_root}/build/airplay-probe-preflight"
 report_dir="${preflight_root}/reports"
 build_dir="${preflight_root}/yocto"
 artifact_dir="${preflight_root}/probe-artifacts"
-source_rev="886bb2ad9b930c14e9a31e54c3671033e7934001"
+source "${firmware_root}/scripts/airplay-build-selection.sh"
 resource_conf="${artifact_dir}/build-resource-controls.conf"
 metadata_file="${artifact_dir}/build-metadata.json"
 build_started=0
@@ -77,7 +77,7 @@ done
 [[ -z "$(git -C "$firmware_root" diff --name-only HEAD)" ]] || {
     echo "Tracked firmware metadata changed after checkout."; exit 2;
 }
-python3 - "$firmware_root" "$report_dir" "$build_dir" "$source_rev" <<'PY_VERIFY'
+python3 - "$firmware_root" "$report_dir" "$build_dir" "$source_rev" "$airplay_recipe" <<'PY_VERIFY'
 import hashlib
 from pathlib import Path
 import re
@@ -108,7 +108,9 @@ for name in ['bitbake', 'openembedded-core', 'meta-clang', 'meta-openembedded', 
     if expected != actual:
         raise SystemExit(f'Gitlink changed after preflight: {name}')
 recipes = set((reports / 'pn-buildlist').read_text().splitlines())
-if not {'catplay-airplay-probe', 'openssl-slim', 'libopus', 'gcc-runtime'}.issubset(recipes):
+if pins.get('airplay_recipe') != sys.argv[5]:
+    raise SystemExit('Preflight recipe differs from selected build target')
+if not {sys.argv[5], 'openssl-slim', 'libopus', 'gcc-runtime'}.issubset(recipes):
     raise SystemExit('Preflight does not contain the required probe/runtime graph')
 if recipes.intersection({'c2a-system-image', 'c2a-system-bundle'}):
     raise SystemExit('Full image/bundle dependency is outside this build scope')
@@ -152,10 +154,10 @@ source "${firmware_root}/openembedded-core/oe-init-build-env" "$build_dir" "${fi
 set -u
 cd "$build_dir"
 # Keep only values needed to validate target identity and locate our artifact.
-timeout --signal=TERM --kill-after=30s 3m bitbake -R "$resource_conf" -e catplay-airplay-probe | \
+timeout --signal=TERM --kill-after=30s 3m bitbake -R "$resource_conf" -e "$airplay_recipe" | \
     python3 -c '
 import json, re, sys
-allowed = set("MACHINE DISTRO DEFAULTTUNE TARGET_ARCH TCLIBC RUST_HOST_SYS RUST_TARGET_SYS RUST_BUILD_SYS STAGING_BINDIR_NATIVE CATPLAY_PROBE_RUSTC CATPLAY_PROBE_EXPECTED_RUST_RELEASE RUST_PANIC_STRATEGY TMPDIR DEPLOY_DIR_IMAGE RUSTFLAGS LDFLAGS RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS BB_NUMBER_THREADS PARALLEL_MAKE CARGO_BUILD_JOBS".split())
+allowed = set("MACHINE DISTRO DEFAULTTUNE TARGET_ARCH TCLIBC RUST_HOST_SYS RUST_TARGET_SYS RUST_BUILD_SYS STAGING_BINDIR_NATIVE CATPLAY_PROBE_RUSTC CATPLAY_PROBE_EXPECTED_RUST_RELEASE RUST_PANIC_STRATEGY TMPDIR DEPLOY_DIR_IMAGE RUSTFLAGS LDFLAGS RUST_LIBC_UNSTABLE_MUSL_V1_2_3 RUST_LIBC_UNSTABLE_GNU_TIME_BITS BB_NUMBER_THREADS PARALLEL_MAKE CARGO_BUILD_JOBS CATPLAY_AIRPLAY_SOURCE_REV CATPLAY_AIRPLAY_ARTIFACT".split())
 values = {}
 for line in sys.stdin:
     match = re.fullmatch(r"(?:export )?([A-Z_0-9]+)=\"(.*)\"\n?", line)
@@ -164,13 +166,13 @@ for line in sys.stdin:
 json.dump(values, sys.stdout, indent=2, sort_keys=True)
 print()
 ' > "$metadata_file"
-python3 - "$metadata_file" "$build_dir" <<'PY_TARGET'
+python3 - "$metadata_file" "$build_dir" "$source_rev" "$artifact_base" <<'PY_TARGET'
 import json
 from pathlib import Path
 import sys
 values = json.loads(Path(sys.argv[1]).read_text())
 import re
-for key, wanted in {'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64', 'BB_NUMBER_THREADS': '2', 'PARALLEL_MAKE': '-j 2', 'CARGO_BUILD_JOBS': '2', 'CATPLAY_PROBE_EXPECTED_RUST_RELEASE': '1.94.1'}.items():
+for key, wanted in {'CATPLAY_AIRPLAY_SOURCE_REV': sys.argv[3], 'CATPLAY_AIRPLAY_ARTIFACT': sys.argv[4], 'MACHINE': 'clk-mini-ultra-nor', 'DISTRO': 'c2a-musl', 'DEFAULTTUNE': 'mips32r2el', 'TCLIBC': 'musl', 'RUST_LIBC_UNSTABLE_MUSL_V1_2_3': '1', 'RUST_LIBC_UNSTABLE_GNU_TIME_BITS': '64', 'BB_NUMBER_THREADS': '2', 'PARALLEL_MAKE': '-j 2', 'CARGO_BUILD_JOBS': '2', 'CATPLAY_PROBE_EXPECTED_RUST_RELEASE': '1.94.1'}.items():
     if values.get(key) != wanted:
         raise SystemExit(f'Build configuration mismatch: {key}')
 if '-fuse-ld=bfd' not in values.get('LDFLAGS', '') or '-Bstatic,-latomic,-Bdynamic' not in values.get('RUSTFLAGS', ''):
@@ -188,18 +190,20 @@ PY_TARGET
 
 build_started=1
 timeout --signal=TERM --kill-after=30s 270m \
-    bitbake -R "$resource_conf" -c deploy catplay-airplay-probe
-python3 - "$metadata_file" "$artifact_dir" "$report_dir" <<'PY_ARTIFACTS'
+    bitbake -R "$resource_conf" -c deploy "$airplay_recipe"
+python3 - "$metadata_file" "$artifact_dir" "$report_dir" "$artifact_base" "$source_rev" <<'PY_ARTIFACTS'
 import hashlib
 import json
 from pathlib import Path
 import shutil
 import re
 import sys
-metadata, destination, reports = map(Path, sys.argv[1:])
+metadata, destination, reports = map(Path, sys.argv[1:4])
 values = json.loads(metadata.read_text())
 deployed = Path(values['DEPLOY_DIR_IMAGE'])
-base = 'airplay-mirror-probe-clk-mini-ultra-nor'
+base = sys.argv[4]
+expected_source = sys.argv[5]
+expected_target = {'airplay-mirror-probe-clk-mini-ultra-nor': ('airplay_mirror_probe', 'example'), 'catplay-airplay-app-clk-mini-ultra-nor': ('catplay_c2a', 'bin')}[base]
 required = [base, base + '.sha256', base + '.elf-header.txt', base + '.dynamic.txt', base + '.abi-attributes.txt', base + '.program-headers.txt', base + '.build-manifest.txt', base + '.rustc-version.txt']
 for name in required:
     path = deployed / name
@@ -207,9 +211,11 @@ for name in required:
         raise SystemExit(f'Missing deployed probe artifact: {name}')
     shutil.copy2(path, destination / name)
 manifest = dict(line.split('=', 1) for line in (destination / (base + '.build-manifest.txt')).read_text().splitlines() if '=' in line)
+if (manifest.get('cargo_target'), manifest.get('cargo_kind')) != expected_target:
+    raise SystemExit('Deployed Cargo target differs from selected artifact role')
 if manifest.get('source_bundle_sha256') != (reports / 'source-bundle.sha256').read_text().split()[0]:
     raise SystemExit('Deployed probe source hash differs from preflight')
-for key, wanted in {'machine': 'clk-mini-ultra-nor', 'distro': 'c2a-musl', 'default_tune': 'mips32r2el', 'tclibc': 'musl', 'expected_catplay_git_revision': '886bb2ad9b930c14e9a31e54c3671033e7934001', 'rust_libc_unstable_musl_v1_2_3': '1', 'rust_libc_unstable_gnu_time_bits': '64'}.items():
+for key, wanted in {'machine': 'clk-mini-ultra-nor', 'distro': 'c2a-musl', 'default_tune': 'mips32r2el', 'tclibc': 'musl', 'expected_catplay_git_revision': expected_source, 'rust_libc_unstable_musl_v1_2_3': '1', 'rust_libc_unstable_gnu_time_bits': '64'}.items():
     if manifest.get(key) != wanted:
         raise SystemExit(f'Deployed probe manifest mismatch: {key}')
 for key, variable in {'target_arch': 'TARGET_ARCH', 'rust_host_sys': 'RUST_HOST_SYS', 'rust_target_sys': 'RUST_TARGET_SYS', 'rust_panic_strategy': 'RUST_PANIC_STRATEGY'}.items():
@@ -249,6 +255,6 @@ if len(header) < 20 or header[:6] != b'\x7fELF\x01\x01' or int.from_bytes(header
 expected = (destination / (base + '.sha256')).read_text().split()[0]
 if hashlib.sha256((destination / base).read_bytes()).hexdigest() != expected:
     raise SystemExit('Deployed probe hash mismatch')
-print('Probe compiled and its deployment reports were collected. Target execution and vehicle compatibility remain untested.')
+print('Selected AirPlay artifact compiled and its deployment reports were collected. Target execution and vehicle compatibility remain untested.')
 PY_ARTIFACTS
-file "${artifact_dir}/airplay-mirror-probe-clk-mini-ultra-nor" > "${artifact_dir}/host-file-identification.txt"
+file "${artifact_dir}/${artifact_base}" > "${artifact_dir}/host-file-identification.txt"
