@@ -7,7 +7,7 @@ CATPLAY_AIRPLAY_CARGO_NAME = "catplay_c2a"
 CATPLAY_AIRPLAY_CARGO_KIND = "bin"
 CATPLAY_AIRPLAY_CARGO_SELECT = "--bin catplay_c2a"
 CATPLAY_AIRPLAY_ARTIFACT = "catplay-airplay-app-${MACHINE}"
-CATPLAY_AIRPLAY_SOURCE_REV = "16160fbf59ca90b68ede634bacc01732d573a1fb"
+CATPLAY_AIRPLAY_SOURCE_REV = "2dd1bb954757068cc5dfe49b089a7f195a536742"
 
 # Actual C2A Cargo native dependencies. The shipping recipe's old FFmpeg,
 # SDL, ALSA, opusenc and system FDK entries are not used by this source tree;
