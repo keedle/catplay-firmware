@@ -3,7 +3,7 @@
 CATPLAY_SRC_BUNDLE := "${THISDIR}/../recipes-apps/files/catplay.tar.gz"
 CATPLAY_SRC_BUNDLE_SHA256 = ""
 
-python __anonymous__ () {
+python __anonymous () {
     import hashlib
     import os
 
