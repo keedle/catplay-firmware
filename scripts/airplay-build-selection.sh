@@ -8,7 +8,7 @@ case "${CATPLAY_AIRPLAY_TARGET:-probe}" in
     ;;
   application)
     airplay_recipe=catplay-airplay-app
-    source_rev=31dc4e69f4658dc66e88117187088fb4c7d0b8a8
+    source_rev=16160fbf59ca90b68ede634bacc01732d573a1fb
     artifact_base=catplay-airplay-app-clk-mini-ultra-nor
     ;;
   *) echo "Unsupported AirPlay build target" >&2; return 2 ;;
